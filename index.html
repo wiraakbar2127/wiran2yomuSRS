@@ -2812,7 +2812,7 @@ function getStrongTargets(jp){
     };
   }).filter(x=>x.answer);
 }
-function buildSrsItems(){const done=new Set(getCompletedStories().map(String));const items=[];const seen=new Set();getStories().filter(s=>done.has(String(s.id))).forEach(story=>{(story.content||[]).forEach((pair,si)=>{const jp=Array.isArray(pair)?pair[0]:pair?.japanese||pair?.jp||"";const idn=Array.isArray(pair)?pair[1]:pair?.indonesian||pair?.id||"";getStrongTargets(jp).forEach((t,ti)=>{const vocabKey=String(t.answer||"").trim().toLowerCase();if(seen.has(vocabKey))return;seen.add(vocabKey);items.push({key:vocabKey,storyId:String(story.id),storyTitle:story.title||"Tanpa Judul",folder:story.level||"N2",questionHtml:t.questionHtml,translationHtml:String(idn||""),answer:t.answer})})})});return items}
+function buildSrsItems(){const done=new Set(getCompletedStories().map(String));const items=[];getStories().filter(s=>done.has(String(s.id))).forEach(story=>{(story.content||[]).forEach((pair,si)=>{const jp=Array.isArray(pair)?pair[0]:pair?.japanese||pair?.jp||"";const idn=Array.isArray(pair)?pair[1]:pair?.indonesian||pair?.id||"";getStrongTargets(jp).forEach((t,ti)=>items.push({key:`${story.id}::${si}::${ti}`,storyId:String(story.id),storyTitle:story.title||"Tanpa Judul",folder:story.level||"N2",questionHtml:t.questionHtml,translationHtml:String(idn||""),answer:t.answer}))})});return items}
 function syncSrsState(items){const s=getSrsState(),now=Date.now();items.forEach(i=>{if(!s[i.key])s[i.key]={level:0,due:now,correct:0,wrong:0,lastResult:null}});saveSrsState(s);return s}
 function getDueSrsItems(){const items=buildSrsItems(),s=syncSrsState(items),now=Date.now();return items.filter(i=>(s[i.key]?.due||0)<=now).sort((a,b)=>(s[a.key]?.due||0)-(s[b.key]?.due||0))}
 function renderSrsPage(){const items=buildSrsItems(),s=syncSrsState(items),now=Date.now();document.getElementById("srsDueCount").textContent=items.filter(i=>(s[i.key]?.due||0)<=now).length;document.getElementById("srsLearningCount").textContent=items.filter(i=>{const l=s[i.key]?.level||0;return l>0&&l<SRS_INTERVALS.length-1}).length;document.getElementById("srsMasteredCount").textContent=items.filter(i=>(s[i.key]?.level||0)>=SRS_INTERVALS.length-1).length;const map=new Map();items.forEach(i=>{if(!map.has(i.storyId))map.set(i.storyId,{title:i.storyTitle,total:0,due:0});const info=map.get(i.storyId);info.total++;if((s[i.key]?.due||0)<=now)info.due++});document.getElementById("srsStoryList").innerHTML=map.size?[...map.values()].map(x=>`<div class="srs-story-row"><div><strong>${escapeHtml(x.title)}</strong></div><span>${x.due}/${x.total} due</span></div>`).join(""):'<div class="empty">Belum ada cerita yang selesai dibaca.</div>';startSrsSession()}
@@ -7933,6 +7933,479 @@ async function toggleUnderwaterAmbient(){
       if(button){button.textContent='♪';button.title='Nyalakan ambient bawah laut';}
     }
   };
+})();
+</script>
+
+
+
+<!-- ===== PATCH FINAL: SRS unik, tombol tabel aktif, tidak ada duplikasi kosakata ===== -->
+<style id="srs-final-no-duplicate-style">
+  .srs-stat{cursor:pointer;transition:.18s}
+  .srs-stat:hover{transform:translateY(-2px);box-shadow:0 10px 25px rgba(47,111,174,.12)}
+  .srs-detail-modal{position:fixed;inset:0;z-index:10050;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(18,45,70,.42);backdrop-filter:blur(5px)}
+  .srs-detail-modal.active{display:flex}
+  .srs-detail-card{width:min(560px,100%);max-height:min(78vh,720px);overflow:auto;background:white;border:1px solid var(--line);border-radius:26px;padding:22px;box-shadow:0 24px 70px rgba(22,61,95,.24)}
+  .srs-detail-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+  .srs-detail-head h2{margin:0;color:var(--brown)}
+  .srs-detail-close{border:0;background:var(--soft);color:var(--brown);width:36px;height:36px;border-radius:50%;font-size:22px;cursor:pointer}
+  .srs-vocab-detail{padding:13px 0;border-bottom:1px dashed var(--line)}
+  .srs-vocab-detail:last-child{border-bottom:0}
+  .srs-vocab-word{font-size:22px;font-weight:900;color:var(--brown);line-height:1.5}
+  .srs-vocab-meta{color:var(--muted);line-height:1.6;font-size:13px}
+  .srs-vocab-time{display:inline-block;margin-top:7px;padding:5px 9px;border-radius:999px;background:var(--soft);color:var(--brown);font-size:12px;font-weight:800}
+</style>
+<script id="srs-final-no-duplicate-script">
+(function(){
+  function stageOf(record){
+    return Math.max(0,Math.min(10,Number(record?.correctStage ?? record?.level ?? 0)||0));
+  }
+
+  function cleanTargetText(html,fallback){
+    const box=document.createElement('div');
+    box.innerHTML=String(html||'');
+    const target=box.querySelector('.srs-correct-word, .srs-question-target, mark, strong');
+    const node=target || box;
+    const clone=node.cloneNode(true);
+    clone.querySelectorAll('rt,rp').forEach(n=>n.remove());
+    return String(clone.textContent||fallback||'').replace(/＿＿＿＿/g,'').trim();
+  }
+
+  function uniqueKeyFromTarget(word,answer){
+    const w=String(word||'').trim();
+    const a=normalizeKana(String(answer||'').trim());
+    return 'vocab::'+w+'::'+a;
+  }
+
+  function chooseBetterRecord(a,b){
+    if(!a) return b;
+    if(!b) return a;
+    const sa=stageOf(a), sb=stageOf(b);
+    if(sb>sa) return b;
+    if(sb<sa) return a;
+    const da=Number(a.due||Infinity), db=Number(b.due||Infinity);
+    if(db<da) return b;
+    return a;
+  }
+
+  function makeRecordCopy(record){
+    return record ? JSON.parse(JSON.stringify(record)) : null;
+  }
+
+  window.buildSrsItems=function(){
+    const completed=new Set(getCompletedStories().map(String));
+    const items=[];
+    const seen=new Map();
+
+    getStories()
+      .filter(story=>completed.has(String(story.id)))
+      .forEach(story=>{
+        (story.content||[]).forEach((pair,sentenceIndex)=>{
+          const jp=Array.isArray(pair)?pair[0]:(pair?.japanese||pair?.jp||'');
+          const idn=Array.isArray(pair)?pair[1]:(pair?.indonesian||pair?.id||'');
+
+          getStrongTargets(jp).forEach((target,targetIndex)=>{
+            const word=cleanTargetText(target.correctSentenceHtml||target.questionHtml,target.answer);
+            const key=uniqueKeyFromTarget(word,target.answer);
+            const oldKey=`${story.id}::${sentenceIndex}::${targetIndex}`;
+
+            if(seen.has(key)){
+              const saved=seen.get(key);
+              saved.oldKeys.push(oldKey);
+              return;
+            }
+
+            const item={
+              key,
+              oldKeys:[oldKey],
+              storyId:String(story.id),
+              storyTitle:story.title||'Tanpa Judul',
+              folder:story.level||'N2',
+              questionHtml:target.questionHtml,
+              correctSentenceHtml:target.correctSentenceHtml||target.questionHtml,
+              translationHtml:String(idn||''),
+              answer:normalizeKana(target.answer),
+              displayWord:word||normalizeKana(target.answer)
+            };
+            seen.set(key,item);
+            items.push(item);
+          });
+        });
+      });
+
+    return items;
+  };
+
+  window.syncSrsState=function(items){
+    const state=getSrsState();
+    const now=Date.now();
+
+    items.forEach(item=>{
+      let best=state[item.key]||null;
+      (item.oldKeys||[]).forEach(oldKey=>{
+        best=chooseBetterRecord(best,state[oldKey]);
+      });
+
+      if(best){
+        state[item.key]=makeRecordCopy(best);
+      }else if(!state[item.key]){
+        state[item.key]={level:0,correctStage:0,due:now,correct:0,wrong:0,lastResult:null};
+      }
+    });
+
+    saveSrsState(state);
+    return state;
+  };
+
+  window.getDueSrsItems=function(){
+    const items=buildSrsItems();
+    const state=syncSrsState(items);
+    const now=Date.now();
+    return items
+      .filter(item=>(state[item.key]?.due||0)<=now)
+      .sort((a,b)=>(state[a.key]?.due||0)-(state[b.key]?.due||0));
+  };
+
+  function dueText(record){
+    const remaining=Number(record?.due||0)-Date.now();
+    if(remaining<=0) return 'Bisa dites sekarang';
+    return `${formatSrsDuration(remaining)} lagi`;
+  }
+
+  function ensureSrsDetailModal(){
+    let modal=document.getElementById('srsDetailModal');
+    if(modal) return modal;
+
+    modal=document.createElement('div');
+    modal.id='srsDetailModal';
+    modal.className='srs-detail-modal';
+    modal.innerHTML=`
+      <div class="srs-detail-card">
+        <div class="srs-detail-head">
+          <h2 id="srsDetailTitle">SRS</h2>
+          <button class="srs-detail-close" type="button" aria-label="Tutup">×</button>
+        </div>
+        <div id="srsDetailList"></div>
+      </div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click',event=>{if(event.target===modal) modal.classList.remove('active')});
+    modal.querySelector('.srs-detail-close').addEventListener('click',()=>modal.classList.remove('active'));
+    return modal;
+  }
+
+  window.openSrsStatusDetail=function(type){
+    const modal=ensureSrsDetailModal();
+    const items=buildSrsItems();
+    const state=syncSrsState(items);
+
+    const filtered=items.filter(item=>{
+      const stage=stageOf(state[item.key]);
+      if(type==='unlearned') return stage===0;
+      if(type==='learning') return stage>0&&stage<10;
+      return stage>=10;
+    }).sort((a,b)=>String(a.displayWord||a.answer).localeCompare(String(b.displayWord||b.answer),'ja'));
+
+    const titles={unlearned:'Belum Dipelajari',learning:'Belajar',mastered:'Dikuasai'};
+    modal.querySelector('#srsDetailTitle').textContent=`${titles[type]||'SRS'} (${filtered.length})`;
+    modal.querySelector('#srsDetailList').innerHTML=filtered.length ? filtered.map(item=>{
+      const record=state[item.key]||{};
+      const stage=stageOf(record);
+      return `<div class="srs-vocab-detail">
+        <div class="srs-vocab-word">${escapeHtml(item.displayWord||item.answer)}</div>
+        <div class="srs-vocab-meta">${escapeHtml(item.storyTitle)}・Progres <strong>${stage}/10</strong><br>Benar ${Number(record.correct||0)} kali・Salah ${Number(record.wrong||0)} kali</div>
+        <span class="srs-vocab-time">${dueText(record)}</span>
+      </div>`;
+    }).join('') : '<div class="empty">Tidak ada kosakata dalam kategori ini.</div>';
+
+    modal.classList.add('active');
+  };
+
+  window.updateSrsCountersOnly=function(){
+    const items=buildSrsItems();
+    const state=syncSrsState(items);
+    const unlearned=items.filter(item=>stageOf(state[item.key])===0).length;
+    const learning=items.filter(item=>{const stage=stageOf(state[item.key]);return stage>0&&stage<10}).length;
+    const mastered=items.filter(item=>stageOf(state[item.key])>=10).length;
+
+    const a=document.getElementById('srsDueCount');
+    const b=document.getElementById('srsLearningCount');
+    const c=document.getElementById('srsMasteredCount');
+    if(a) a.textContent=unlearned;
+    if(b) b.textContent=learning;
+    if(c) c.textContent=mastered;
+  };
+
+  function wireSrsStatButtons(){
+    const stats=[
+      ['srsDueCount','unlearned','Belum Dipelajari'],
+      ['srsLearningCount','learning','Belajar'],
+      ['srsMasteredCount','mastered','Dikuasai']
+    ];
+
+    stats.forEach(([id,type,label])=>{
+      const count=document.getElementById(id);
+      const card=count?.closest('.srs-stat');
+      if(!count||!card) return;
+      const span=card.querySelector('span');
+      if(span) span.textContent=label;
+      card.setAttribute('role','button');
+      card.setAttribute('tabindex','0');
+      card.onclick=()=>window.openSrsStatusDetail(type);
+      card.onkeydown=event=>{
+        if(event.key==='Enter'||event.key===' '){
+          event.preventDefault();
+          window.openSrsStatusDetail(type);
+        }
+      };
+    });
+  }
+
+  const previousRenderSrsPage=window.renderSrsPage;
+  window.renderSrsPage=function(){
+    if(typeof previousRenderSrsPage==='function'){
+      previousRenderSrsPage.apply(this,arguments);
+    }
+    window.setTimeout(()=>{
+      updateSrsCountersOnly();
+      wireSrsStatButtons();
+    },0);
+  };
+
+  document.addEventListener('DOMContentLoaded',()=>{
+    ensureSrsDetailModal();
+    wireSrsStatButtons();
+    updateSrsCountersOnly();
+  });
+
+  window.addEventListener('load',()=>{
+    window.setTimeout(()=>{
+      ensureSrsDetailModal();
+      wireSrsStatButtons();
+      updateSrsCountersOnly();
+    },100);
+  });
+})();
+</script>
+
+
+<!-- ===== PATCH PALING AKHIR: paksa tabel SRS benar-benar unik berdasarkan kosakata yang tampil ===== -->
+<script id="absolute-final-srs-visible-word-dedup">
+(function(){
+  function srsStage(record){
+    return Math.max(0, Math.min(10, Number(record?.correctStage ?? record?.level ?? 0) || 0));
+  }
+
+  function stripRubyAndGetText(html, fallback){
+    const temp = document.createElement('div');
+    temp.innerHTML = String(html || '');
+
+    const target =
+      temp.querySelector('.srs-correct-word') ||
+      temp.querySelector('.srs-question-target') ||
+      temp.querySelector('mark') ||
+      temp.querySelector('strong');
+
+    const node = target || temp;
+    const clone = node.cloneNode(true);
+    clone.querySelectorAll('rt,rp').forEach(n => n.remove());
+
+    return String(clone.textContent || fallback || '')
+      .replace(/＿＿＿＿/g, '')
+      .replace(/\s+/g, '')
+      .trim();
+  }
+
+  function getVisibleSrsWord(item){
+    return stripRubyAndGetText(
+      item.correctSentenceHtml || item.questionHtml || '',
+      item.displayWord || item.answer || 'Kosakata'
+    );
+  }
+
+  function normalizeSrsVocabKey(word, answer){
+    const w = String(word || '')
+      .replace(/\s+/g, '')
+      .replace(/[。、，,.!?！？「」『』（）()【】\[\]・]/g, '')
+      .trim();
+
+    // Prioritas utama: tulisan kosakata yang tampil di tabel.
+    // Kalau tulisan sama, cukup tampil 1 kali saja.
+    if(w) return 'word::' + w;
+
+    return 'answer::' + normalizeKana(String(answer || '').trim());
+  }
+
+  function bestEntry(oldEntry, newEntry){
+    if(!oldEntry) return newEntry;
+
+    const oldStage = srsStage(oldEntry.record);
+    const newStage = srsStage(newEntry.record);
+
+    if(newStage > oldStage) return newEntry;
+    if(newStage < oldStage) return oldEntry;
+
+    const oldDue = Number(oldEntry.record?.due || Infinity);
+    const newDue = Number(newEntry.record?.due || Infinity);
+
+    if(newDue < oldDue) return newEntry;
+    return oldEntry;
+  }
+
+  function getUniqueSrsEntriesFinal(){
+    const items = buildSrsItems();
+    const state = syncSrsState(items);
+    const map = new Map();
+
+    items.forEach(item => {
+      const word = getVisibleSrsWord(item);
+      const uniqueKey = normalizeSrsVocabKey(word, item.answer);
+      const record = state[item.key] || {};
+      const entry = { item, record, word: word || item.answer || 'Kosakata' };
+
+      map.set(uniqueKey, bestEntry(map.get(uniqueKey), entry));
+    });
+
+    return [...map.values()];
+  }
+
+  function dueTextFinal(record){
+    const remaining = Number(record?.due || 0) - Date.now();
+    return remaining <= 0 ? 'Bisa dites sekarang' : `${formatSrsDuration(remaining)} lagi`;
+  }
+
+  window.openSrsStatusDetail = function(type){
+    let modal = document.getElementById('srsDetailModal');
+
+    if(!modal){
+      modal = document.createElement('div');
+      modal.id = 'srsDetailModal';
+      modal.className = 'srs-detail-modal';
+      modal.innerHTML = `
+        <div class="srs-detail-card" role="dialog" aria-modal="true">
+          <div class="srs-detail-head">
+            <h2 id="srsDetailTitle">Daftar Kosakata</h2>
+            <button class="srs-detail-close" type="button" aria-label="Tutup">×</button>
+          </div>
+          <div id="srsDetailList"></div>
+        </div>`;
+      document.body.appendChild(modal);
+      modal.addEventListener('click', event => {
+        if(event.target === modal) modal.classList.remove('active');
+      });
+      modal.querySelector('.srs-detail-close').addEventListener('click', () => {
+        modal.classList.remove('active');
+      });
+    }
+
+    const filtered = getUniqueSrsEntriesFinal()
+      .filter(entry => {
+        const stage = srsStage(entry.record);
+        if(type === 'unlearned') return stage === 0;
+        if(type === 'learning') return stage > 0 && stage < 10;
+        return stage >= 10;
+      })
+      .sort((a,b) => String(a.word).localeCompare(String(b.word), 'ja'));
+
+    const titles = {
+      unlearned: 'Belum Dipelajari',
+      learning: 'Belajar',
+      mastered: 'Dikuasai'
+    };
+
+    modal.querySelector('#srsDetailTitle').textContent =
+      `${titles[type] || 'SRS'} (${filtered.length})`;
+
+    modal.querySelector('#srsDetailList').innerHTML = filtered.length
+      ? filtered.map(entry => {
+          const r = entry.record || {};
+          const stage = srsStage(r);
+
+          return `<div class="srs-vocab-detail">
+            <div class="srs-vocab-word">${escapeHtml(entry.word)}</div>
+            <div class="srs-vocab-meta">
+              ${escapeHtml(entry.item.storyTitle || 'Tanpa Judul')}・Progres <strong>${stage}/10</strong><br>
+              Benar ${Number(r.correct || 0)} kali・Salah ${Number(r.wrong || 0)} kali
+            </div>
+            <span class="srs-vocab-time">${dueTextFinal(r)}</span>
+          </div>`;
+        }).join('')
+      : '<div class="empty">Tidak ada kosakata dalam kategori ini.</div>';
+
+    modal.classList.add('active');
+  };
+
+  window.updateSrsCountersOnly = function(){
+    const entries = getUniqueSrsEntriesFinal();
+
+    const unlearned = entries.filter(entry => srsStage(entry.record) === 0).length;
+    const learning = entries.filter(entry => {
+      const stage = srsStage(entry.record);
+      return stage > 0 && stage < 10;
+    }).length;
+    const mastered = entries.filter(entry => srsStage(entry.record) >= 10).length;
+
+    const due = document.getElementById('srsDueCount');
+    const learn = document.getElementById('srsLearningCount');
+    const master = document.getElementById('srsMasteredCount');
+
+    if(due) due.textContent = unlearned;
+    if(learn) learn.textContent = learning;
+    if(master) master.textContent = mastered;
+  };
+
+  function wireFinalSrsButtons(){
+    const configs = [
+      ['srsDueCount', 'unlearned', 'Belum Dipelajari'],
+      ['srsLearningCount', 'learning', 'Belajar'],
+      ['srsMasteredCount', 'mastered', 'Dikuasai']
+    ];
+
+    configs.forEach(([id, type, label]) => {
+      const count = document.getElementById(id);
+      const card = count?.closest('.srs-stat');
+      if(!card) return;
+
+      const span = card.querySelector('span');
+      if(span) span.textContent = label;
+
+      card.setAttribute('role', 'button');
+      card.setAttribute('tabindex', '0');
+      card.onclick = () => window.openSrsStatusDetail(type);
+      card.onkeydown = event => {
+        if(event.key === 'Enter' || event.key === ' '){
+          event.preventDefault();
+          window.openSrsStatusDetail(type);
+        }
+      };
+    });
+  }
+
+  const previousRenderSrsPageFinal = window.renderSrsPage;
+  window.renderSrsPage = function(){
+    const result = typeof previousRenderSrsPageFinal === 'function'
+      ? previousRenderSrsPageFinal.apply(this, arguments)
+      : undefined;
+
+    setTimeout(() => {
+      wireFinalSrsButtons();
+      updateSrsCountersOnly();
+    }, 0);
+
+    return result;
+  };
+
+  document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => {
+      wireFinalSrsButtons();
+      updateSrsCountersOnly();
+    }, 0);
+  });
+
+  window.addEventListener('load', () => {
+    setTimeout(() => {
+      wireFinalSrsButtons();
+      updateSrsCountersOnly();
+    }, 120);
+  });
 })();
 </script>
 
