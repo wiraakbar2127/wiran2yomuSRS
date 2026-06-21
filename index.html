@@ -2367,6 +2367,22 @@
       #quizArea .srs-source-card{font-size:11px!important}
     }
 
+  
+
+    /* v65 mobile SRS keyboard keep-alive */
+    #quizArea .srs-input.answer-locked{
+      user-select:none;
+      -webkit-user-select:none;
+      caret-color:transparent;
+      background:#f7f7f5;
+      color:#555;
+    }
+    @media(max-width:700px){
+      #quizArea .quiz-word{font-size:clamp(34px,12vw,52px)!important;line-height:1.18!important}
+      #quizArea .quiz-word.answer-shown{font-size:clamp(32px,11vw,48px)!important}
+      #quizArea .srs-input-wrap{position:relative;z-index:5}
+    }
+
   </style>
 </head>
 <body>
@@ -2955,17 +2971,23 @@ function renderSRS(feedback){
   const questionBlock=feedback
     ?`<div class="quiz-word answer-shown"><ruby>${escapeHtml(current.jp)}<rt>${escapeHtml(current.reading||'')}</rt></ruby></div><div class="srs-answer-meaning">${escapeHtml(current.id||current.meaning||'-')}</div>`
     :`<div class="quiz-word">${escapeHtml(q.jp)}</div>`;
-  area.innerHTML=`${renderSRSProgressButton()}${questionBlock}<div class="srs-level">Level ${current.level||0}/12</div>${renderSRSSourceCard(current)}<form class="srs-input-wrap" id="srsForm"><input class="srs-input ${feedback?'answer-locked':''}" id="srsInput" autocomplete="off" autocapitalize="off" spellcheck="false" lang="ja" inputmode="kana" placeholder="contoh: ばんぐみ" value="${feedback?escapeHtml(feedback.input||''):''}" ${feedback?'readonly aria-readonly="true"':''}><button class="btn srs-submit" id="srsSubmitBtn" type="submit">${feedback?'Berikutnya':'Jawab'}</button></form>`;
+  area.innerHTML=`${renderSRSProgressButton()}${questionBlock}<div class="srs-level">Level ${current.level||0}/12</div>${renderSRSSourceCard(current)}<form class="srs-input-wrap" id="srsForm"><input class="srs-input ${feedback?'answer-locked':''}" id="srsInput" autocomplete="off" autocapitalize="off" spellcheck="false" lang="ja" inputmode="kana" placeholder="contoh: ばんぐみ" value="${feedback?escapeHtml(feedback.input||''):''}" ${feedback?'data-locked-answer="1" aria-readonly="true"':''}><button class="btn srs-submit" id="srsSubmitBtn" type="submit">${feedback?'Berikutnya':'Jawab'}</button></form>`;
   bindSRSProgressButton();
   const input=$('#srsInput');
   const submitBtn=$('#srsSubmitBtn');
   const focusInput=()=>{try{input&&input.focus({preventScroll:true})}catch(e){input&&input.focus()}};
   if(input){
     if(feedback){
-      input.addEventListener('keydown',e=>{if(e.key!=='Enter')e.preventDefault()});
-      try{submitBtn&&submitBtn.focus({preventScroll:true})}catch(e){submitBtn&&submitBtn.focus()}
-      requestAnimationFrame(()=>scrollToSRSCard('answer'));
-      setTimeout(()=>scrollToSRSCard('answer'),90);
+      const lockedValue=input.value;
+      const keepKeyboard=()=>{try{input.focus({preventScroll:true})}catch(e){input.focus()}};
+      input.addEventListener('beforeinput',e=>{e.preventDefault()});
+      input.addEventListener('paste',e=>{e.preventDefault()});
+      input.addEventListener('drop',e=>{e.preventDefault()});
+      input.addEventListener('input',()=>{if(input.value!==lockedValue)input.value=lockedValue});
+      input.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();renderSRS();return}if(!['Shift','Control','Alt','Meta','Tab'].includes(e.key))e.preventDefault()});
+      requestAnimationFrame(()=>{scrollToSRSCard('answer');keepKeyboard()});
+      setTimeout(()=>{scrollToSRSCard('answer');keepKeyboard()},90);
+      setTimeout(keepKeyboard,240);
     }else{
       requestAnimationFrame(()=>{scrollToSRSCard('question');focusInput()});
       setTimeout(()=>{scrollToSRSCard('question');focusInput()},110);
